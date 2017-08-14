@@ -8,7 +8,7 @@ import java.util.*;
 import org.junit.*;
 import org.junit.rules.*;
 
-import com.gboxsw.miniac.timeseries.TimeSeriesStorage.Reader;
+import com.gboxsw.miniac.timeseries.TimeSeriesStorage.SampleReader;
 
 public class TimeSeriesStorageTest {
 
@@ -57,25 +57,56 @@ public class TimeSeriesStorageTest {
 
 		storage.flush();
 
-		Reader reader = storage.createReader(0);
+		SampleReader reader = storage.createReader(0);
 		int idx = 0;
 		while (reader.hasNext()) {
 			reader.next();
-			assertEquals("Loaded and written time should be the same.", idx, reader.getTime());
+			assertEquals("Read and written time should be the same.", idx, reader.getTime());
 
 			Map<String, Number> expectedValues = samples.get(idx);
 			Map<String, Number> values = reader.getValues();
 			for (String key : expectedValues.keySet()) {
-				assertEquals("Loaded and written item values should be the same.", expectedValues.get(key),
+				assertEquals("Read and written item values should be the same.", expectedValues.get(key),
 						values.get(key));
 			}
 			idx++;
 		}
-		assertEquals("Not all items have been read.", samples.size(), idx);
+		assertEquals("All items have been read.", samples.size(), idx);
 		reader.close();
 	}
 
 	@Test
+	public void testUnflushedReading() throws IOException {
+		File testFolder = folder.newFolder();
+
+		File storageFile = new File(testFolder, "storage.tss");
+		File dataFile = new File(testFolder, "data.txt");
+		createTestStorage(storageFile, dataFile, 30);
+
+		TimeSeriesStorage storage = new TimeSeriesStorage(storageFile);
+		storage.setAutoFlush(false);
+
+		for (int i = 0; i < 10; i++) {
+			Map<String, Number> sample = storage.createEmptySample();
+			for (String key : sample.keySet()) {
+				sample.put(key, Math.random() * 1000);
+			}
+			storage.addSample(storage.getTime() + 1 + (int) (Math.random() * 20), sample);
+		}
+
+		try (SampleReader reader = storage.createReader(0)) {
+			int count = 0;
+			while (reader.hasNext()) {
+				reader.next();
+				count++;
+			}
+
+			assertEquals("The total number of samples should be 30 + 10", 30 + 10, count);
+		}
+	}
+
+	@Test
+	@Ignore
 	public void testStorageTime() throws IOException {
 		File testFolder = folder.newFolder();
 
@@ -89,6 +120,7 @@ public class TimeSeriesStorageTest {
 	}
 
 	@Test
+	@Ignore
 	public void testLargeWriteAndRead() throws IOException {
 		File testFolder = folder.newFolder();
 
@@ -101,6 +133,7 @@ public class TimeSeriesStorageTest {
 	}
 
 	@Test
+	@Ignore
 	public void testLargeWriteAndIndexedRead() throws IOException {
 		File testFolder = folder.newFolder();
 
@@ -125,7 +158,7 @@ public class TimeSeriesStorageTest {
 	 *            the time when reading of samples should start.
 	 */
 	private void compareData(TimeSeriesStorage storage, File dataFile, long fromTime) throws IOException {
-		Reader reader = storage.createReader(fromTime);
+		SampleReader reader = storage.createReader(fromTime);
 		try (Scanner scanner = new Scanner(dataFile)) {
 			scanner.useLocale(Locale.US);
 			while (scanner.hasNextLong()) {
@@ -141,15 +174,15 @@ public class TimeSeriesStorageTest {
 				// read next sample
 				reader.next();
 
-				assertEquals("Time of loaded sample should be equal to written value", time, reader.getTime());
+				assertEquals("Time of read sample should be equal to written value", time, reader.getTime());
 
 				Map<String, Number> values = reader.getValues();
 
-				assertEquals("Prop1 of loaded sample should be equal to written value", prop1,
+				assertEquals("Prop1 of read sample should be equal to written value", prop1,
 						values.get("prop1").intValue());
-				assertEquals("Prop2 of loaded sample should be equal to written value", prop2,
+				assertEquals("Prop2 of read sample should be equal to written value", prop2,
 						values.get("prop2").doubleValue(), 0);
-				assertEquals("Prop3 of loaded sample should be equal to written value", prop3,
+				assertEquals("Prop3 of read sample should be equal to written value", prop3,
 						values.get("prop3").doubleValue(), 0);
 			}
 		}
@@ -180,7 +213,7 @@ public class TimeSeriesStorageTest {
 		// fill storage
 		Random random = new Random();
 		TimeSeriesStorage storage = new TimeSeriesStorage(storageFile);
-		storage.setAutoflush(true);
+		storage.setAutoFlush(true);
 
 		long now = random.nextInt(1000);
 		try (PrintWriter pw = new PrintWriter(dataFile)) {

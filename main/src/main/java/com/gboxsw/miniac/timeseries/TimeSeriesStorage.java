@@ -271,7 +271,7 @@ public class TimeSeriesStorage {
 	 * Time series reader that encapsulates reading functionality of the
 	 * storage.
 	 */
-	public class Reader implements Closeable {
+	public class SampleReader implements Closeable {
 
 		/**
 		 * File lock.
@@ -333,7 +333,7 @@ public class TimeSeriesStorage {
 		 * @throws IOException
 		 *             if reading of the input failed.
 		 */
-		private Reader(long fromTime) throws IOException {
+		private SampleReader(long fromTime) throws IOException {
 			fromTime = Math.max(0, fromTime);
 			this.fromTime = fromTime;
 
@@ -413,6 +413,10 @@ public class TimeSeriesStorage {
 				throw new IOException("The reader has been closed.");
 			}
 
+			if (!hasNext()) {
+				throw new NoSuchElementException("The reader does not contain unread samples.");
+			}
+
 			if (nextSampleTime >= 0) {
 				sampleTime = nextSampleTime;
 				System.arraycopy(nextSampleValues, 0, sampleValues, 0, sampleValues.length);
@@ -447,31 +451,153 @@ public class TimeSeriesStorage {
 		}
 
 		/**
-		 * Returns item values of the current sample.
+		 * Returns item values in the current sample.
 		 * 
 		 * @return the map with item values.
 		 * @throws RuntimeException
 		 *             if no sample is available.
 		 */
 		public Map<String, Number> getValues() {
-			if (sampleTime < 0) {
-				throw new IllegalStateException("No sample is available.");
-			}
+			ensureSample();
 
 			Map<String, Number> result = new HashMap<String, Number>();
 			for (int i = 0; i < items.length; i++) {
-				if (sampleValues[i] == NULL_VALUE) {
-					result.put(items[i].name, null);
-				} else {
-					if (items[i].decimals == 0) {
-						result.put(items[i].name, new Long(sampleValues[i]));
-					} else {
-						result.put(items[i].name, new Double(((double) sampleValues[i]) / items[i].decimalsPower));
-					}
-				}
+				result.put(items[i].name, decodeValue(items[i], sampleValues[i]));
 			}
 
 			return result;
+		}
+
+		/**
+		 * Return item value in the current sample.
+		 * 
+		 * @param name
+		 *            the name of the item.
+		 * @return the value of the item in the current sample.
+		 */
+		public Number getValue(String name) {
+			ensureSample();
+
+			int idx = findItemIndex(name);
+			return decodeValue(items[idx], sampleValues[idx]);
+		}
+
+		/**
+		 * Returns whether item value in the current sample is null.
+		 * 
+		 * @param name
+		 *            the name of the item.
+		 * @return true, if the item value is null, false otherwise.
+		 */
+		public boolean isNullValue(String name) {
+			ensureSample();
+
+			int idx = findItemIndex(name);
+			return sampleValues[idx] == NULL_VALUE;
+		}
+
+		/**
+		 * Returns item value as a long value.
+		 * 
+		 * @param name
+		 *            the name of the item.
+		 * @return value of the item.
+		 */
+		public long getValueAsLong(String name) {
+			ensureSample();
+
+			int idx = findItemIndex(name);
+			if (items[idx].decimals != 0) {
+				throw new IllegalArgumentException("The item \"" + name + "\" is a double value.");
+			}
+
+			if (sampleValues[idx] == NULL_VALUE) {
+				throw new NullPointerException("The value of item is null.");
+			}
+
+			return sampleValues[idx];
+		}
+
+		/**
+		 * Returns item value as an integer value.
+		 * 
+		 * @param name
+		 *            the name of the item.
+		 * @return value of the item.
+		 */
+		public int getValueAsInt(String name) {
+			return (int) getValueAsLong(name);
+		}
+
+		/**
+		 * Returns item value as a double value.
+		 * 
+		 * @param name
+		 *            the name of the item.
+		 * @return value of the item.
+		 */
+		public double getValueAsDouble(String name) {
+			ensureSample();
+
+			int idx = findItemIndex(name);
+			if (sampleValues[idx] == NULL_VALUE) {
+				throw new NullPointerException("The value of item is null.");
+			}
+
+			if (items[idx].decimals == 0) {
+				return sampleValues[idx];
+			} else {
+				return ((double) sampleValues[idx]) / items[idx].decimalsPower;
+			}
+		}
+
+		/**
+		 * Throws exception if no sample is loaded by the reader.
+		 */
+		private void ensureSample() throws IllegalStateException {
+			if (sampleTime < 0) {
+				throw new IllegalStateException("No sample is available.");
+			}
+		}
+
+		/**
+		 * Returns index of item with given name or throws exception if such an
+		 * item does not exist.
+		 * 
+		 * @param name
+		 *            the name of item.
+		 * @return the index of item.
+		 * @throws IllegalArgumentException
+		 *             if item with required name does not exist.
+		 */
+		private int findItemIndex(String name) throws IllegalArgumentException {
+			Integer index = itemIndices.get(name);
+			if (index == null) {
+				throw new IllegalArgumentException("The item \"" + name + "\" does not exist.");
+			}
+
+			return index;
+		}
+
+		/**
+		 * Decodes raw value of an item in the current sample.
+		 * 
+		 * @param item
+		 *            the description of the item.
+		 * @param rawValue
+		 *            the raw value.
+		 * @return the decoded value.
+		 */
+		private Number decodeValue(Item item, long rawValue) {
+			if (rawValue == NULL_VALUE) {
+				return null;
+			} else {
+				if (item.decimals == 0) {
+					return new Long(rawValue);
+				} else {
+					return new Double(((double) rawValue) / item.decimalsPower);
+				}
+			}
 		}
 
 		@Override
@@ -598,6 +724,11 @@ public class TimeSeriesStorage {
 	private final Item[] items;
 
 	/**
+	 * Indices of items by name.
+	 */
+	private final Map<String, Integer> itemIndices = new HashMap<String, Integer>();
+
+	/**
 	 * Position of the first record (main index table).
 	 */
 	private final long dataOffset;
@@ -635,7 +766,7 @@ public class TimeSeriesStorage {
 	/**
 	 * List of active in-memory readers.
 	 */
-	private final List<Reader> inMemoryReaders = new ArrayList<>();
+	private final List<SampleReader> inMemoryReaders = new ArrayList<>();
 
 	/**
 	 * The last stored sample or null, if no sample has been stored by this
@@ -646,7 +777,7 @@ public class TimeSeriesStorage {
 	/**
 	 * True, if the "autoflush" feature is enabled, false otherwise.
 	 */
-	private boolean autoflush;
+	private boolean autoFlush = false;
 
 	/**
 	 * Time when the last flush of samples occurred.
@@ -703,8 +834,14 @@ public class TimeSeriesStorage {
 				// minimal size of continuous data block (2B)
 				dataBlockSize = in.readUnsignedShort() * 100;
 
-				// structure of items
+				// read structure of items and create map with item indices
 				items = readItems(in);
+				for (int i = 0; i < items.length; i++) {
+					itemIndices.put(items[i].name, i);
+				}
+				if (itemIndices.size() != items.length) {
+					throw new IOException("Invalid items of samples, duplicated names of items.");
+				}
 
 				// read the main index table
 				mainIndexTable = readIndexTable(storageFile, dataOffset);
@@ -734,28 +871,77 @@ public class TimeSeriesStorage {
 		return result;
 	}
 
-	public boolean isAutoflush() {
-		return autoflush;
+	/**
+	 * Returns whether auto-flush feature is enabled.
+	 * 
+	 * @return true, if the feature is enabled, false otherwise.
+	 * @see TimeSeriesStorage#setAutoFlush(boolean)
+	 */
+	public boolean isAutoFlush() {
+		return autoFlush;
 	}
 
-	public void setAutoflush(boolean autoflush) {
-		this.autoflush = autoflush;
+	/**
+	 * Sets the auto-flush feature. If auto-flush is enabled, the method
+	 * {@link TimeSeriesStorage#addSample(long, Map)} can automatically invoke
+	 * the method {@link TimeSeriesStorage#flush()}.
+	 * 
+	 * @param autoFlush
+	 *            true, to enable auto-flush, false to disable.
+	 */
+	public void setAutoFlush(boolean autoFlush) {
+		this.autoFlush = autoFlush;
 	}
 
+	/**
+	 * Returns the maximal number of unflushed samples, in the case when the
+	 * auto-flush feature is enabled.
+	 * 
+	 * @return the maximal number of unflushed samples.
+	 */
 	public int getMaxUnflushedSamples() {
 		return maxUnflushedSamples;
 	}
 
+	/**
+	 * Sets the maximal number of unflushed samples, in the case when the
+	 * auto-flush feature is enabled.
+	 * 
+	 * @param maxUnflushedSamples
+	 *            the maximal number of unflushed samples.
+	 */
 	public void setMaxUnflushedSamples(int maxUnflushedSamples) {
 		this.maxUnflushedSamples = Math.max(maxUnflushedSamples, 0);
 	}
 
+	/**
+	 * Returns the maximal time between two flushes, in the case when the
+	 * auto-flush feature is enabled.
+	 * 
+	 * @return the maximal time between two flushed in seconds.
+	 */
 	public long getMaxSecondsBetweenFlushes() {
 		return maxSecondsBetweenFlushes;
 	}
 
+	/**
+	 * Sets the maximal time between two flushes, in the case when the
+	 * auto-flush feature is enabled.
+	 * 
+	 * @param maxSecondsBetweenFlushes
+	 *            the maximal time between two flushed in seconds.
+	 */
 	public void setMaxSecondsBetweenFlushes(long maxSecondsBetweenFlushes) {
 		this.maxSecondsBetweenFlushes = Math.max(maxSecondsBetweenFlushes, 0);
+	}
+
+	/**
+	 * Returns file where data are stored.
+	 * 
+	 * @return the storage file.
+	 */
+	public File getFile() {
+		return file;
 	}
 
 	/**
@@ -782,8 +968,8 @@ public class TimeSeriesStorage {
 	 * @throws IOException
 	 *             if reading from storage failed.
 	 */
-	public Reader createReader(long fromTime) throws IOException {
-		return new Reader(fromTime);
+	public SampleReader createReader(long fromTime) throws IOException {
+		return new SampleReader(fromTime);
 	}
 
 	/**
@@ -882,13 +1068,15 @@ public class TimeSeriesStorage {
 	 * @throws IOException
 	 *             if writing the sample failed.
 	 * @throws IllegalArgumentException
-	 *             if the sample is not complete (a missing value).
+	 *             if the sample is not complete (a missing value) or time of
+	 *             sample is invalid.
 	 */
 	public void addSample(long time, Map<String, ? extends Number> values)
 			throws IOException, IllegalArgumentException {
 		// check time of sample
 		if (time <= storageTime) {
-			throw new InvalidTimeOfSampleException();
+			throw new IllegalArgumentException(
+					"Time of sample is equal or smaller than time of the latest sample in the storage.");
 		}
 
 		// create array with raw values (index 0 stores time)
@@ -920,14 +1108,14 @@ public class TimeSeriesStorage {
 
 		// add sample to in-memory readers
 		if (!inMemoryReaders.isEmpty()) {
-			for (Reader reader : inMemoryReaders) {
+			for (SampleReader reader : inMemoryReaders) {
 				if (sample.time >= reader.fromTime) {
 					reader.inMemorySamples.offer(sample);
 				}
 			}
 		}
 
-		if (autoflush) {
+		if (autoFlush) {
 			// flush samples to storage file (if required)
 			long secondsFromLastFlush = (MonotonicClock.INSTANCE.currentTimeMillis() - timeOfLastFlush) / 1000;
 			if ((unflushedSamples.size() > maxUnflushedSamples) || (secondsFromLastFlush < 0)
