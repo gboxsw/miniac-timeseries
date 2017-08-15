@@ -1119,7 +1119,7 @@ public class TimeSeriesStorage {
 			// flush samples to storage file (if required)
 			long secondsFromLastFlush = (MonotonicClock.INSTANCE.currentTimeMillis() - timeOfLastFlush) / 1000;
 			if ((unflushedSamples.size() > maxUnflushedSamples) || (secondsFromLastFlush < 0)
-					|| (secondsFromLastFlush > maxSecondsBetweenFlushes)) {
+					|| (secondsFromLastFlush >= maxSecondsBetweenFlushes)) {
 				flush();
 			}
 		}
